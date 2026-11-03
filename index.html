@@ -1114,7 +1114,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   }
 
   // ---------------- estado de interface ----------------
-  var S = { tab: 'turmas', editTurma: null, pf: null, pfModel: 'A', sel: { prova: '', turma: '' }, queue: [], busy: false };
+  var S = { tab: 'turmas', editTurma: null, manual: null, pf: null, pfModel: 'A', sel: { prova: '', turma: '' }, queue: [], busy: false };
   var root = $('#app');
 
   function toast(msg) {
@@ -1397,7 +1397,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     var r = item.r, found = findAluno(r.matricula, S.sel.turma);
     var g = grade(prova, r.modelo || 'A', r.answers);
     var rec = { id: uid(), provaId: prova.id, mat: r.matricula, nome: found ? found.aluno.nome : '(matrícula ' + r.matricula + ')', turmaId: found ? found.turma.id : '',
-      modelo: r.modelo || 'A', answers: r.answers.slice(), acertos: g.acertos, nota: g.nota, data: new Date().toISOString() };
+      modelo: r.modelo || 'A', answers: r.answers.slice(), acertos: g.acertos, nota: g.nota, data: new Date().toISOString(), manual: !!item.manual };
     var dupe = db.resultados.filter(function (x) { return x.provaId === prova.id && x.mat === rec.mat; })[0];
     db.resultados = db.resultados.filter(function (x) { return !(x.provaId === prova.id && x.mat === rec.mat); });
     db.resultados.push(rec); save();
@@ -1450,8 +1450,8 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     el.innerHTML = S.queue.map(function (it) {
       var badge = { lendo: '⏳ lendo…', salvo: '✔ salvo', revisar: '⚠ revisar', erro: '✖ erro' }[it.status];
       var body = '';
-      if (it.status === 'erro') body = '<p class="bad">' + esc(it.r.error) + '</p>';
-      if (it.status === 'salvo') body = '<p><b>' + esc(it.rec.nome) + '</b> — nota <b>' + fmtNota(it.rec.nota) + '</b> (' + it.rec.acertos + '/' + prova.nq + ')' + (it.replaced ? ' <span class="hint">(substituiu leitura anterior)</span>' : '') + '</p>' +
+      if (it.status === 'erro') body = '<p class="bad">' + esc(it.r.error) + '</p><div class="row"><button class="rman">⌨ Digitar as respostas deste aluno</button></div>';
+      if (it.status === 'salvo') body = '<p><b>' + esc(it.rec.nome) + '</b> — nota <b>' + fmtNota(it.rec.nota) + '</b> (' + it.rec.acertos + '/' + prova.nq + ')' + (it.manual ? ' <span class="hint">(digitado)</span>' : '') + (it.replaced ? ' <span class="hint">(substituiu lançamento anterior)</span>' : '') + '</p>' +
         (it.r.warnings && it.r.warnings.length ? '<p class="hint">' + esc(it.r.warnings.join(' ')) + '</p>' : '');
       if (it.status === 'revisar' && prova) body = reviewHTML(it, prova);
       return '<div class="card q ' + it.status + '"><div class="row sp"><span class="hint">' + esc(it.nome) + '</span><b>' + badge + '</b></div>' +
@@ -1465,6 +1465,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
         it.r.answers[+b.dataset.q - 1] = b.dataset.a || null; renderQueue();
       };
     });
+    $$('.rman', el).forEach(function (b) { b.onclick = function () { openManual(); }; });
     $$('.rdrop', el).forEach(function (b) { b.onclick = function () { S.queue = S.queue.filter(function (x) { return x.id !== b.dataset.id; }); renderQueue(); }; });
     $$('.rok', el).forEach(function (b) {
       b.onclick = function () {
@@ -1481,13 +1482,97 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
       '<label>Turma<select id="cturma">' + selectOptions(db.turmas, S.sel.turma, 'nome', 'Todas') + '</select></label>' +
       '<div class="row"><label class="btn pri">📷 Fotografar folha<input id="ccam" type="file" accept="image/*" capture="environment" hidden></label>' +
       '<label class="btn">🖼 Escolher fotos<input id="cgal" type="file" accept="image/*" multiple hidden></label></div>' +
-      '<p class="hint">Enquadre a folha inteira, com os 4 quadrados pretos dos cantos visíveis, boa luz e sem sombra forte. Fotos sem rasura e sem dúvida são salvas sozinhas; as demais pedem sua conferência.</p></div><div id="queue"></div>';
+      '<div class="row"><button id="cman">⌨ Digitar respostas de um aluno (sem foto)</button></div>' +
+      '<p class="hint">Enquadre a folha inteira, com os 4 quadrados pretos dos cantos visíveis, boa luz e sem sombra forte. Fotos sem rasura e sem dúvida são salvas sozinhas; as demais pedem sua conferência.</p></div><div id="manual"></div><div id="queue"></div>';
     $('#cprova').onchange = function () { S.sel.prova = this.value; };
     $('#cturma').onchange = function () { S.sel.turma = this.value; };
     ['ccam', 'cgal'].forEach(function (id) {
       $('#' + id).onchange = function () { if (this.files.length) processFiles(this.files); this.value = ''; };
     });
+    $('#cman').onclick = function () { openManual(); };
+    renderManual();
     renderQueue();
+  }
+
+  // ---- Digitação manual
+  function openManual() {
+    var prova = provaById(S.sel.prova);
+    if (!prova) return toast('Escolha a prova primeiro.');
+    if (!S.manual) S.manual = { mat: '', modelo: 'A', answers: [] };
+    renderManual();
+    var el = $('#manual'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  function manualGridHTML(prova, m) {
+    var h = '<div class="grid">';
+    for (var q = 1; q <= prova.nq; q++) {
+      var cur = m.answers[q - 1];
+      h += '<div class="qrow"><span class="qn">' + String(q).padStart(2, '0') + '</span>' +
+        ALTS.map(function (a) { return '<button class="alt' + (cur === a ? ' on' : '') + '" data-q="' + q + '" data-a="' + a + '">' + a + '</button>'; }).join('') +
+        '<button class="alt' + (!cur ? ' on' : '') + '" data-q="' + q + '" data-a="">—</button></div>';
+    }
+    return h + '</div>';
+  }
+  function manualPreview(prova, m) {
+    var n = 0; for (var i = 0; i < prova.nq; i++) if (m.answers[i]) n++;
+    var g = grade(prova, m.modelo, m.answers.concat([]).slice(0, prova.nq));
+    return 'Respondidas: <b>' + n + '</b> de ' + prova.nq + ' • acertos: <b>' + g.acertos + '</b> • nota: <b>' + fmtNota(g.nota) + '</b>';
+  }
+  function renderManual() {
+    var el = $('#manual'); if (!el) return;
+    var m = S.manual, prova = provaById(S.sel.prova);
+    if (!m || !prova) { el.innerHTML = ''; return; }
+    var alunos = [];
+    (S.sel.turma ? db.turmas.filter(function (t) { return t.id === S.sel.turma; }) : db.turmas).forEach(function (t) {
+      t.alunos.forEach(function (a) { alunos.push({ mat: a.mat, nome: a.nome, turma: t.nome }); });
+    });
+    alunos.sort(function (a, b) { return a.nome.localeCompare(b.nome, 'pt'); });
+    var done = {}; db.resultados.forEach(function (r) { if (r.provaId === prova.id) done[r.mat] = true; });
+    el.innerHTML = '<div class="card"><h2>Digitar respostas</h2>' +
+      '<label>Aluno<select id="mmat"><option value="">— escolha o aluno —</option>' + alunos.map(function (a) {
+        return '<option value="' + a.mat + '"' + (a.mat === m.mat ? ' selected' : '') + '>' + esc(a.nome) + (S.sel.turma ? '' : ' (' + esc(a.turma) + ')') + (done[a.mat] ? ' ✔' : '') + '</option>';
+      }).join('') + '</select></label>' +
+      (prova.usaB ? '<label>Modelo da prova<select id="mmod"><option' + (m.modelo === 'A' ? ' selected' : '') + '>A</option><option' + (m.modelo === 'B' ? ' selected' : '') + '>B</option></select></label>' : '') +
+      '<label>Respostas em sequência (A, B, C, D; use - para questão em branco)<input id="mquick" placeholder="ABCDAB-CD…" autocapitalize="characters" autocomplete="off"></label>' +
+      '<div id="mgrid">' + manualGridHTML(prova, m) + '</div>' +
+      '<p id="mprev" class="hint">' + manualPreview(prova, m) + '</p>' +
+      '<div class="row"><button class="pri" id="msave">Salvar</button><button id="mclose">Fechar</button></div>' +
+      '<p class="hint">✔ no nome = aluno que já tem nota nesta prova; ao escolher, as respostas dele são carregadas e podem ser corrigidas.</p></div>';
+    function refresh() { $('#mgrid').innerHTML = manualGridHTML(prova, m); bindGrid(); $('#mprev').innerHTML = manualPreview(prova, m); }
+    function bindGrid() {
+      $$('#mgrid .alt').forEach(function (b) {
+        b.onclick = function () { m.answers[+b.dataset.q - 1] = b.dataset.a || null; refresh(); };
+      });
+    }
+    bindGrid();
+    $('#mmat').onchange = function () {
+      m.mat = this.value;
+      var old = db.resultados.filter(function (r) { return r.provaId === prova.id && r.mat === m.mat; })[0];
+      if (old) { m.answers = old.answers.slice(); m.modelo = old.modelo; } else m.answers = [];
+      renderManual();
+    };
+    if ($('#mmod')) $('#mmod').onchange = function () { m.modelo = this.value; $('#mprev').innerHTML = manualPreview(prova, m); };
+    $('#mquick').oninput = function () {
+      var chars = this.value.toUpperCase().replace(/[^ABCD\-\.\_\*]/g, '').split('');
+      var arr = [];
+      for (var i = 0; i < prova.nq; i++) { var c = chars[i]; arr.push(c && ALTS.indexOf(c) >= 0 ? c : null); }
+      m.answers = arr; refresh();
+    };
+    $('#mclose').onclick = function () { S.manual = null; renderManual(); };
+    $('#msave').onclick = function () {
+      if (!m.mat) return toast('Escolha o aluno.');
+      var n = 0; for (var i = 0; i < prova.nq; i++) if (m.answers[i]) n++;
+      if (!n && !confirm('Nenhuma resposta marcada. Salvar mesmo assim (nota zero)?')) return;
+      var exists = db.resultados.filter(function (r) { return r.provaId === prova.id && r.mat === m.mat; })[0];
+      var ans = []; for (var k = 0; k < prova.nq; k++) ans.push(m.answers[k] || null);
+      var item = { id: uid(), nome: 'Digitado manualmente', status: 'salvo', manual: true, ok: true,
+        r: { matricula: m.mat, modelo: prova.usaB ? m.modelo : 'A', answers: ans, flags: [], warnings: [], matriculaOK: true } };
+      commit(item, prova);
+      item.replaced = !!exists;
+      S.queue.unshift(item);
+      toast('Salvo: ' + item.rec.nome + ' — nota ' + fmtNota(item.rec.nota));
+      S.manual = { mat: '', modelo: m.modelo, answers: [] };
+      renderManual(); renderQueue();
+    };
   }
 
   // ---- Resultados
@@ -1521,7 +1606,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
         var corte = (prova.notaMax || 10) * 0.6;
         h += '<div class="card"><div class="row sp stats"><div><span class="hint">Corrigidas</span><br><b>' + st.rs.length + '</b></div><div><span class="hint">Média</span><br><b>' + fmtNota(media) + '</b></div><div><span class="hint">Maior</span><br><b>' + fmtNota(Math.max.apply(null, notas)) + '</b></div><div><span class="hint">Menor</span><br><b>' + fmtNota(Math.min.apply(null, notas)) + '</b></div></div></div>';
         h += '<div class="card"><h3>Notas</h3><table>' + st.rs.slice().sort(function (a, b) { return a.nome.localeCompare(b.nome, 'pt'); }).map(function (r) {
-          return '<tr class="' + (r.nota < corte ? 'low' : '') + '"><td>' + esc(r.nome) + '</td><td class="num">' + r.acertos + '/' + prova.nq + '</td><td class="num"><b>' + fmtNota(r.nota) + '</b></td></tr>';
+          return '<tr class="' + (r.nota < corte ? 'low' : '') + '"><td>' + esc(r.nome) + (r.manual ? ' <span class="hint" title="digitado">✎</span>' : '') + '</td><td class="num">' + r.acertos + '/' + prova.nq + '</td><td class="num"><b>' + fmtNota(r.nota) + '</b></td></tr>';
         }).join('') + '</table><p class="hint">Em vermelho: abaixo de 60% (candidatos à recuperação).</p>';
         if (S.sel.turma) {
           var feitos = st.rs.map(function (r) { return r.mat; });
