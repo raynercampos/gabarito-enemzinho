@@ -1,4 +1,4 @@
-# Gabarito ENEMzinho
+# Gabaritei
 
 Corretor de gabaritos por foto (folha de bolinhas, 4 alternativas). Funciona offline e pode ser instalado no celular.
 

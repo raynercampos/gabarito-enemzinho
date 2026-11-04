@@ -10,8 +10,8 @@
 <link rel="apple-touch-icon" href="icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="Gabarito">
-<title>Gabarito ENEMzinho</title>
+<meta name="apple-mobile-web-app-title" content="Gabaritei">
+<title>Gabaritei</title>
 <style>
 :root{--bg:#f4f6f9;--card:#fff;--ink:#1b2430;--mut:#667085;--pri:#1e3a5f;--ok:#16803c;--warn:#b45309;--bad:#b42318;--line:#dde3ea}
 @media (prefers-color-scheme:dark){:root{--bg:#10151c;--card:#1a212b;--ink:#e8edf3;--mut:#9aa7b6;--pri:#5b8def;--line:#2b3542;--ok:#4ade80;--warn:#fbbf24;--bad:#f87171}}
@@ -71,7 +71,7 @@ details summary{cursor:pointer;color:var(--pri);margin-top:8px}
   <div class="row"><button class="pri" type="submit">Entrar</button></div>
   <p class="hint"><a href="#" id="backup">Exportar backup criptografado</a></p>
 </form></div>
-<header><h1>Gabarito ENEMzinho</h1><div><button id="menuBackup">Backup</button><button id="menuLock">Bloquear</button></div></header>
+<header><h1>Gabaritei</h1><div><button id="menuBackup">Backup</button><button id="menuLock">Bloquear</button></div></header>
 <div id="banner" hidden></div>
 <nav id="tabs"></nav>
 <main id="app"></main>
@@ -1713,12 +1713,12 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     $('#backup').onclick = function () {
       var r = localStorage.getItem(VKEY);
       if (!r) return toast('Nada para exportar ainda.');
-      download('backup_enemzinho_omr.json', r, 'application/json');
+      download('backup_gabaritei.json', r, 'application/json');
     };
   }
   $('#menuBackup').onclick = function () {
     var r = localStorage.getItem(VKEY); if (!r) return toast('Nada para exportar ainda.');
-    download('backup_enemzinho_omr.json', r, 'application/json');
+    download('backup_gabaritei.json', r, 'application/json');
   };
   $('#menuLock').onclick = function () { saving.then(function () { location.reload(); }); };
 
