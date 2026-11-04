@@ -58,6 +58,8 @@ details summary{cursor:pointer;color:var(--pri);margin-top:8px}
 #toast.on{opacity:.95}
 #lock{position:fixed;inset:0;background:var(--bg);z-index:30;display:flex;align-items:center;justify-content:center;padding:20px}
 #lock .card{width:100%;max-width:380px}
+#bkbanner{display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#fff4db;color:#5b3b00;padding:10px 14px;border-bottom:1px solid #f0d28a;font-size:.9rem}
+#bkbanner span{flex:1;min-width:200px}#bkbanner button{padding:6px 10px;color:#1b2430}
 #banner{background:var(--warn);color:#fff;padding:8px 14px;font-size:.85rem}
 </style>
 </head>
@@ -68,11 +70,20 @@ details summary{cursor:pointer;color:var(--pri);margin-top:8px}
   <label id="lock2" hidden>Repita a senha<input id="lockpw2" type="password" autocomplete="new-password"></label>
   <p class="hint" id="lockhelp"></p>
   <p class="bad" id="lockmsg"></p>
+  <label class="chk"><input type="checkbox" id="lockshow"> Mostrar senha</label>
   <div class="row"><button class="pri" type="submit">Entrar</button></div>
-  <p class="hint"><a href="#" id="backup">Exportar backup criptografado</a></p>
+  <p class="hint"><a href="#" id="lockrestoreLink">Já tenho um backup — restaurar</a></p>
+  <div id="lockrestore" hidden>
+    <label class="btn">📂 Escolher arquivo de backup<input id="lrfile" type="file" accept=".json,application/json" hidden></label>
+    <p class="hint" id="lrname"></p>
+    <label>Senha do backup<input id="lrpw" type="password" autocomplete="off"></label>
+    <p class="bad" id="lrmsg"></p>
+    <div class="row"><button type="button" class="dng" id="lrgo">Restaurar</button></div>
+  </div>
 </form></div>
 <header><h1>Gabaritei</h1><div><button id="menuBackup">Backup</button><button id="menuLock">Bloquear</button></div></header>
 <div id="banner" hidden></div>
+<div id="bkbanner" hidden></div>
 <nav id="tabs"></nav>
 <main id="app"></main>
 <div id="toast"></div>
@@ -1133,7 +1144,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     if (!hasCrypto || !key) { localStorage.setItem(VKEY, JSON.stringify({ v: 1, plain: json })); return Promise.resolve(); }
     var iv = crypto.getRandomValues(new Uint8Array(12));
     return crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, enc.encode(json)).then(function (ct) {
-      localStorage.setItem(VKEY, JSON.stringify({ v: 1, salt: b64(salt), iv: b64(iv), ct: b64(new Uint8Array(ct)) }));
+      localStorage.setItem(VKEY, JSON.stringify({ v: 1, ts: Date.now(), salt: b64(salt), iv: b64(iv), ct: b64(new Uint8Array(ct)) }));
     });
   }
   function openVault(pass, raw) {
@@ -1145,6 +1156,67 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
         db = JSON.parse(dec.decode(pt));
         normDB();
       });
+    });
+  }
+
+
+  // ---------------- backup, restauração e troca de senha ----------------
+  function decryptBackup(text, pass) {
+    return Promise.resolve().then(function () {
+      var v = JSON.parse(text);
+      if (!v || !v.salt || !v.iv || !v.ct) throw { code: 'formato' };
+      var sl = unb64(v.salt), iv = unb64(v.iv), ct = unb64(v.ct);
+      return deriveKey(pass, sl).then(function (k) {
+        return crypto.subtle.decrypt({ name: 'AES-GCM', iv: iv }, k, ct).then(function (pt) {
+          var data = JSON.parse(dec.decode(pt));
+          if (!data || !Array.isArray(data.turmas) || !Array.isArray(data.provas) || !Array.isArray(data.resultados)) throw { code: 'formato' };
+          return { data: data, key: k, salt: sl };
+        }, function () { throw { code: 'senha' }; });
+      });
+    }).catch(function (e) { throw e && e.code ? e : { code: 'formato' }; });
+  }
+  function errMsg(e) {
+    return e && e.code === 'senha'
+      ? 'Senha incorreta. Use a senha que estava valendo quando o backup foi feito.'
+      : 'Este arquivo não é um backup do Gabaritei.';
+  }
+  function resumo(d) {
+    var al = 0; d.turmas.forEach(function (t) { al += t.alunos.length; });
+    return d.turmas.length + ' turma(s), ' + al + ' aluno(s), ' + d.provas.length + ' prova(s) e ' + d.resultados.length + ' nota(s)';
+  }
+  function stamp() { var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+  function exportBackup() {
+    return saving.then(function () {
+      var r = localStorage.getItem(VKEY);
+      if (!r) { toast('Nada para exportar ainda.'); return; }
+      var name = 'backup_gabaritei_' + stamp() + '.json';
+      function done() { db.cfg.lastBackup = Date.now(); db.cfg.snooze = 0; save(); toast('Backup gerado: ' + name); renderBanner(); }
+      var file = null; try { file = new File([r], name, { type: 'application/json' }); } catch (e) { file = null; }
+      if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+        return navigator.share({ files: [file], title: 'Backup Gabaritei' }).then(done, function (e) {
+          if (e && e.name !== 'AbortError') { download(name, r, 'application/json'); done(); }
+        });
+      }
+      download(name, r, 'application/json'); done();
+    });
+  }
+  function renderBanner() {
+    var el = $('#bkbanner'); if (!el) return;
+    var DAY = 864e5, now = Date.now(), last = db.cfg.lastBackup || 0;
+    var due = !!key && (db.turmas.length || db.resultados.length) && (!last || now - last > 30 * DAY) && !(db.cfg.snooze && now < db.cfg.snooze);
+    el.hidden = !due; if (!due) { el.innerHTML = ''; return; }
+    el.innerHTML = '<span>' + (last ? 'Seu último backup foi há ' + Math.floor((now - last) / DAY) + ' dias.' : 'Você ainda não fez backup.') +
+      ' Sem ele, perder o celular é perder as notas.</span><button id="bkdo">Fazer backup</button><button id="bklater">Depois</button>';
+    $('#bkdo').onclick = exportBackup;
+    $('#bklater').onclick = function () { db.cfg.snooze = Date.now() + 7 * DAY; save(); renderBanner(); };
+  }
+  function changePassword(oldp, newp) {
+    var v = JSON.parse(localStorage.getItem(VKEY));
+    return deriveKey(oldp, unb64(v.salt)).then(function (k) {
+      return crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(v.iv) }, k, unb64(v.ct)).then(null, function () { throw { code: 'senha' }; });
+    }).then(function () {
+      var ns = crypto.getRandomValues(new Uint8Array(16));
+      return deriveKey(newp, ns).then(function (nk) { key = nk; salt = ns; return saving.then(function () { return doSave(); }); });
     });
   }
 
@@ -1191,14 +1263,15 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   }
 
   // ---------------- abas ----------------
-  var TABS = [['turmas', 'Turmas'], ['provas', 'Provas'], ['folhas', 'Folhas'], ['corrigir', 'Corrigir'], ['resultados', 'Notas']];
+  var TABS = [['turmas', 'Turmas'], ['provas', 'Provas'], ['folhas', 'Folhas'], ['corrigir', 'Corrigir'], ['resultados', 'Notas'], ['ajustes', 'Ajustes']];
   function render() {
+    renderBanner();
     $('#tabs').innerHTML = TABS.map(function (t) {
       return '<button data-tab="' + t[0] + '" class="' + (S.tab === t[0] ? 'on' : '') + '">' + t[1] + '</button>';
     }).join('');
     $$('#tabs button').forEach(function (b) { b.onclick = function () { S.tab = b.dataset.tab; render(); window.scrollTo(0, 0); }; });
     root.innerHTML = '';
-    ({ turmas: viewTurmas, provas: viewProvas, folhas: viewFolhas, corrigir: viewCorrigir, resultados: viewResultados })[S.tab]();
+    ({ turmas: viewTurmas, provas: viewProvas, folhas: viewFolhas, corrigir: viewCorrigir, resultados: viewResultados, ajustes: viewAjustes })[S.tab]();
   }
 
   // ---- Turmas
@@ -1786,6 +1859,54 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     }
   }
 
+
+  // ---- Ajustes (backup, restauração, senha)
+  function viewAjustes() {
+    var last = db.cfg.lastBackup, bfile = null;
+    root.innerHTML = '<div class="card"><h2>Backup</h2>' +
+      '<p class="hint">' + (last ? 'Último backup: ' + esc(new Date(last).toLocaleString('pt-BR')) : 'Nenhum backup feito ainda.') + '</p>' +
+      '<div class="row"><button class="pri" id="abk">Fazer backup agora</button></div>' +
+      '<p class="hint">Gera um arquivo criptografado com todas as turmas, provas e notas. Guarde-o fora do celular (Drive ou e-mail para você mesmo). Ele só abre com a senha que estava valendo no momento do backup.</p></div>' +
+      '<div class="card"><h2>Restaurar backup</h2>' +
+      '<label class="btn">📂 Escolher arquivo de backup<input id="arfile" type="file" accept=".json,application/json" hidden></label>' +
+      '<p class="hint" id="arname"></p>' +
+      '<label>Senha do backup<input id="arpw" type="password" autocomplete="off"></label>' +
+      '<div class="row"><button class="dng" id="argo">Restaurar</button></div>' +
+      '<p class="hint">Atenção: os dados atuais deste aparelho serão substituídos pelos do backup. A senha de entrada continua a atual.</p></div>' +
+      '<div class="card"><h2>Trocar senha</h2>' +
+      '<label>Senha atual<input id="spold" type="password" autocomplete="off"></label>' +
+      '<label>Nova senha (mínimo 8 caracteres)<input id="spnew" type="password" autocomplete="new-password"></label>' +
+      '<label>Repita a nova senha<input id="spnew2" type="password" autocomplete="new-password"></label>' +
+      '<label class="chk"><input type="checkbox" id="spshow"> Mostrar senhas</label>' +
+      '<div class="row"><button class="pri" id="spgo">Trocar senha</button></div>' +
+      '<p class="hint">Backups feitos antes da troca continuam com a senha antiga.</p></div>';
+    $('#abk').onclick = exportBackup;
+    $('#arfile').onchange = function () { bfile = this.files[0] || null; $('#arname').textContent = bfile ? bfile.name : ''; };
+    $('#argo').onclick = function () {
+      if (!bfile) return toast('Escolha o arquivo de backup.');
+      var pw = $('#arpw').value; if (!pw) return toast('Digite a senha do backup.');
+      bfile.text().then(function (text) { return decryptBackup(text, pw); }).then(function (res) {
+        if (!confirm('Substituir os dados deste aparelho pelo backup (' + resumo(res.data) + ')?')) return;
+        db = res.data; normDB(); S.sel = { prova: '', turma: '' }; S.queue = []; S.tab = 'turmas';
+        return save().then(function () { render(); toast('Backup restaurado.'); });
+      }).catch(function (e) { toast(errMsg(e)); });
+    };
+    $('#spshow').onchange = function () {
+      var t = this.checked ? 'text' : 'password';
+      ['spold', 'spnew', 'spnew2'].forEach(function (id) { $('#' + id).type = t; });
+    };
+    $('#spgo').onclick = function () {
+      var o = $('#spold').value, n = $('#spnew').value;
+      if (n.length < 8) return toast('A nova senha precisa de pelo menos 8 caracteres.');
+      if (n !== $('#spnew2').value) return toast('As novas senhas não conferem.');
+      if (n === o) return toast('A nova senha é igual à atual.');
+      changePassword(o, n).then(function () {
+        ['spold', 'spnew', 'spnew2'].forEach(function (id) { $('#' + id).value = ''; });
+        toast('Senha trocada. Use a nova senha na próxima vez.');
+      }).catch(function (e) { toast(e && e.code === 'senha' ? 'Senha atual incorreta.' : 'Não consegui trocar a senha.'); });
+    };
+  }
+
   // ---------------- tela de senha ----------------
   function start() {
     var raw = localStorage.getItem(VKEY);
@@ -1817,16 +1938,26 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
           .catch(function () { msg.textContent = 'Senha incorreta.'; });
       }
     };
-    $('#backup').onclick = function () {
-      var r = localStorage.getItem(VKEY);
-      if (!r) return toast('Nada para exportar ainda.');
-      download('backup_gabaritei.json', r, 'application/json');
+    $('#lockshow').onchange = function () { var t = this.checked ? 'text' : 'password'; $('#lockpw').type = t; $('#lockpw2').type = t; };
+    $('#lockrestoreLink').onclick = function (e) { e.preventDefault(); $('#lockrestore').hidden = !$('#lockrestore').hidden; };
+    var lrFile = null;
+    $('#lrfile').onchange = function () { lrFile = this.files[0] || null; $('#lrname').textContent = lrFile ? lrFile.name : ''; };
+    $('#lrgo').onclick = function () {
+      var m = $('#lrmsg');
+      if (!lrFile) { m.textContent = 'Escolha o arquivo de backup.'; return; }
+      var pw = $('#lrpw').value; if (!pw) { m.textContent = 'Digite a senha do backup.'; return; }
+      if (!first && !confirm('Já existem dados neste aparelho. Restaurar o backup substitui tudo o que há aqui. Continuar?')) return;
+      m.textContent = 'Abrindo o backup…';
+      lrFile.text().then(function (text) {
+        return decryptBackup(text, pw).then(function (res) {
+          key = res.key; salt = res.salt; db = res.data; normDB();
+          localStorage.setItem(VKEY, text);   // o arquivo já é o cofre criptografado
+          lock.hidden = true; render(); toast('Backup restaurado: ' + resumo(db) + '.');
+        });
+      }).catch(function (e) { m.textContent = errMsg(e); });
     };
   }
-  $('#menuBackup').onclick = function () {
-    var r = localStorage.getItem(VKEY); if (!r) return toast('Nada para exportar ainda.');
-    download('backup_gabaritei.json', r, 'application/json');
-  };
+  $('#menuBackup').onclick = function () { exportBackup(); };
   $('#menuLock').onclick = function () { saving.then(function () { location.reload(); }); };
 
   // Bloqueio automático: sem toque por 5 min (ou app em segundo plano por 2 min) -> pede a senha de novo
