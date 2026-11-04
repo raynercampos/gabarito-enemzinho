@@ -1,5 +1,5 @@
 // Service worker: guarda o app no aparelho para abrir offline. Não toca em dados de alunos.
-var CACHE = 'gabarito-enemzinho-v5';
+var CACHE = 'gabarito-enemzinho-v6';
 var FILES = ['./', 'index.html', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 self.addEventListener('install', function (e) {
   e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(FILES); }).then(function () { return self.skipWaiting(); }));

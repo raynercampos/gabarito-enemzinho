@@ -925,14 +925,35 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     var ob = L.orientBar;
     doc.rect(ob.x, ob.y, ob.w, ob.h, 'F');
 
-    // Título
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(15);
-    doc.text(opts.examName || 'ENEMzinho', 105, 26, { align: 'center' });
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(9);
-    var sub = [opts.school, opts.subtitle || 'Folha de Respostas'].filter(Boolean).join('  •  ');
-    doc.text(sub, 105, 32, { align: 'center' });
+    // Cabeçalho: brasão (esquerda) + escola + prova + "Folha de Respostas"
+    var hasSchool = !!opts.school;
+    if (opts.logo && opts.logo.data) {
+      var box = 24, lw = box, lh = box, r = opts.logo.ratio || 1; // ratio = largura/altura
+      if (r >= 1) lh = box / r; else lw = box * r;
+      try { doc.addImage(opts.logo.data, 'PNG', 24 + (box - lw) / 2, 10 + (box - lh) / 2, lw, lh); } catch (e) { /* logo inválido: segue sem */ }
+    }
+    var title = opts.examName || 'ENEMzinho';
+    if (hasSchool) {
+      doc.setFont('helvetica', 'bold');
+      var fs = 10.5;
+      doc.setFontSize(fs);
+      while (fs > 6.5 && doc.getTextWidth(opts.school) > 104) { fs -= 0.5; doc.setFontSize(fs); }
+      doc.text(opts.school, 105, 24, { align: 'center' });
+      doc.setFontSize(15);
+      var tf = 15;
+      while (tf > 9 && doc.getTextWidth(title) > 104) { tf -= 1; doc.setFontSize(tf); }
+      doc.text(title, 105, 31.5, { align: 'center' });
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9);
+      doc.text(opts.subtitle || 'Folha de Respostas', 105, 37, { align: 'center' });
+    } else {
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(15);
+      doc.text(title, 105, 26, { align: 'center' });
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9);
+      doc.text(opts.subtitle || 'Folha de Respostas', 105, 32, { align: 'center' });
+    }
 
     // Campos de identificação
     doc.setLineWidth(0.25);
@@ -1075,7 +1096,16 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   var enc = new TextEncoder(), dec = new TextDecoder();
   var hasCrypto = !!(window.crypto && window.crypto.subtle);
   var key = null, salt = null;
-  var db = { turmas: [], provas: [], resultados: [], cfg: { school: '' } };
+  var db = { turmas: [], provas: [], resultados: [], escolas: [], cfg: { school: '' } };
+  function normDB() {
+    db.cfg = db.cfg || { school: '' };
+    db.escolas = db.escolas || [];
+    // migra o campo de texto antigo "Escola" para uma escola cadastrada (sem brasão)
+    if (!db.escolas.length && db.cfg.school && db.cfg.school.trim()) {
+      var e = { id: Math.random().toString(36).slice(2, 9), nome: db.cfg.school.trim(), logo: null, ratio: 1 };
+      db.escolas.push(e); db.cfg.escolaId = e.id;
+    }
+  }
 
   function b64(u8) { var s = ''; for (var i = 0; i < u8.length; i += 8192) s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192)); return btoa(s); }
   function unb64(s) { var b = atob(s), u = new Uint8Array(b.length); for (var i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; }
@@ -1110,7 +1140,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
       return crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(v.iv) }, k, unb64(v.ct)).then(function (pt) {
         key = k;
         db = JSON.parse(dec.decode(pt));
-        db.cfg = db.cfg || { school: '' };
+        normDB();
       });
     });
   }
@@ -1366,6 +1396,53 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     };
   }
 
+  // ---- Escola (nome + brasão)
+  function readLogo(file) {
+    // reduz para no máx. 500 px e converte em PNG (mantém transparência); fundo transparente vira branco no PDF
+    return createImageBitmap(file).then(function (bmp) {
+      var sc = Math.min(1, 500 / Math.max(bmp.width, bmp.height));
+      var c = document.createElement('canvas'); c.width = Math.max(1, Math.round(bmp.width * sc)); c.height = Math.max(1, Math.round(bmp.height * sc));
+      var ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height); ctx.drawImage(bmp, 0, 0, c.width, c.height);
+      return { data: c.toDataURL('image/png'), ratio: c.width / c.height };
+    });
+  }
+  function openEscola(id) {
+    var el = $('#epanel'); if (!el) return;
+    var cur = id === 'new' ? { id: null, nome: '', logo: null, ratio: 1 } : db.escolas.filter(function (e) { return e.id === id; })[0];
+    if (!cur) return;
+    var draft = { nome: cur.nome, logo: cur.logo, ratio: cur.ratio || 1 };
+    function paint() {
+      el.innerHTML = '<div class="card"><h3>' + (cur.id ? 'Editar escola' : 'Nova escola') + '</h3>' +
+        '<label>Nome da escola<input id="enome" value="' + esc(draft.nome) + '" placeholder="Ex.: Instituto Esther Valério"></label>' +
+        '<div class="row"><label class="btn">🖼 ' + (draft.logo ? 'Trocar brasão' : 'Escolher brasão') + '<input id="elogo" type="file" accept="image/*" hidden></label>' +
+        (draft.logo ? '<button id="erem">Remover brasão</button>' : '') + '</div>' +
+        (draft.logo ? '<p><img src="' + draft.logo + '" alt="brasão" style="max-width:120px;max-height:120px;background:#fff;border:1px solid var(--line);border-radius:8px;padding:6px"></p>' : '<p class="hint">Use uma imagem nítida do brasão (PNG ou JPG), de preferência com fundo branco ou transparente. Ela fica guardada só neste aparelho, junto com os outros dados.</p>') +
+        '<div class="row"><button class="pri" id="esave">Salvar escola</button>' + (cur.id ? '<button class="dng" id="edel">Excluir</button>' : '') + '<button id="ecancel">Cancelar</button></div></div>';
+      $('#enome').oninput = function () { draft.nome = this.value; };
+      $('#elogo').onchange = function () {
+        var f = this.files[0]; if (!f) return;
+        readLogo(f).then(function (r) { draft.logo = r.data; draft.ratio = r.ratio; paint(); })
+          .catch(function () { toast('Não consegui abrir essa imagem. Tente um PNG ou JPG.'); });
+      };
+      if ($('#erem')) $('#erem').onclick = function () { draft.logo = null; paint(); };
+      $('#ecancel').onclick = function () { el.innerHTML = ''; };
+      if ($('#edel')) $('#edel').onclick = function () {
+        if (!confirm('Excluir esta escola? As folhas já impressas não mudam.')) return;
+        db.escolas = db.escolas.filter(function (e) { return e.id !== cur.id; });
+        if (db.cfg.escolaId === cur.id) db.cfg.escolaId = '';
+        save(); render(); toast('Escola excluída.');
+      };
+      $('#esave').onclick = function () {
+        var nome = draft.nome.trim(); if (!nome) return toast('Digite o nome da escola.');
+        if (cur.id) { cur.nome = nome; cur.logo = draft.logo; cur.ratio = draft.ratio; }
+        else { cur = { id: uid(), nome: nome, logo: draft.logo, ratio: draft.ratio }; db.escolas.push(cur); }
+        db.cfg.escolaId = cur.id; save(); render(); toast('Escola salva.');
+      };
+    }
+    paint();
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
   // ---- Folhas
   function viewFolhas() {
     var h = '<div class="card"><h2>Gerar folhas de resposta</h2>' +
@@ -1373,7 +1450,11 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
       '<label>Turma (para folhas com nome e matrícula já impressos)<select id="fturma">' + selectOptions(db.turmas, S.sel.turma, 'nome', '— escolha —') + '</select></label>' +
       '<label>Modelo já marcado na folha<select id="fmodelo"><option value="">O aluno marca</option><option value="A">Todos A</option><option value="B">Todos B</option><option value="alt">Alternar A/B</option></select></label>' +
       '<label>Data (opcional)<input id="fdata" placeholder="dd/mm/aaaa"></label>' +
-      '<label>Escola (opcional)<input id="fescola" value="' + esc(db.cfg.school) + '"></label>' +
+      '<label>Escola (nome e brasão no topo da folha)<select id="fescola"><option value="">Sem identificação da escola</option>' + db.escolas.map(function (e) {
+        return '<option value="' + e.id + '"' + (e.id === db.cfg.escolaId ? ' selected' : '') + '>' + esc(e.nome) + '</option>';
+      }).join('') + '</select></label>' +
+      '<div class="row"><button id="enew">+ Cadastrar escola</button><button id="eedit">Editar escola</button></div>' +
+      '<div id="epanel"></div>' +
       '<div class="row"><button class="pri" id="fpers">Gerar folhas da turma (PDF)</button></div>' +
       '<div class="row"><label>Cópias em branco<input id="fcop" type="number" min="1" max="100" value="5"></label><button id="fblank">Gerar em branco (PDF)</button></div>' +
       '<p class="hint">Folha personalizada: nome, turma e matrícula saem impressos e as bolinhas da matrícula já pintadas. Imprima em A4, sem ajustar escala (100%).</p></div>';
@@ -1381,9 +1462,16 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     $('#fprova').onchange = function () { S.sel.prova = this.value; };
     $('#fturma').onchange = function () { S.sel.turma = this.value; };
     function base(prova) {
-      db.cfg.school = $('#fescola').value; save();
-      return { examName: prova.nome.length > 34 ? 'ENEMzinho' : prova.nome, school: db.cfg.school, subtitle: 'Folha de Respostas', data: $('#fdata').value };
+      var esc_ = db.escolas.filter(function (e) { return e.id === $('#fescola').value; })[0];
+      db.cfg.escolaId = esc_ ? esc_.id : ''; save();
+      return { examName: prova.nome.length > 34 ? 'ENEMzinho' : prova.nome, school: esc_ ? esc_.nome : '',
+        logo: esc_ && esc_.logo ? { data: esc_.logo, ratio: esc_.ratio || 1 } : null, subtitle: 'Folha de Respostas', data: $('#fdata').value };
     }
+    $('#enew').onclick = function () { openEscola('new'); };
+    $('#eedit').onclick = function () {
+      var id = $('#fescola').value; if (!id) return toast('Escolha uma escola para editar.');
+      openEscola(id);
+    };
     $('#fpers').onclick = function () {
       var prova = provaById($('#fprova').value), turma = turmaById($('#fturma').value);
       if (!prova || !turma) return toast('Escolha a prova e a turma.');
@@ -1690,7 +1778,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
       lock.hidden = true; $('#banner').hidden = false; $('#banner').textContent = 'Atenção: este navegador/modo não permite criptografia; os dados ficam salvos sem senha. Abra o app por um endereço seguro (https) para ativar a proteção.';
       render(); return;
     }
-    if (vault && vault.plain) { db = JSON.parse(vault.plain); first = true; } // migra
+    if (vault && vault.plain) { db = JSON.parse(vault.plain); normDB(); first = true; } // migra
     $('#lockttl').textContent = first ? 'Crie uma senha' : 'Digite a senha';
     $('#lock2').hidden = !first;
     $('#lockhelp').textContent = first
