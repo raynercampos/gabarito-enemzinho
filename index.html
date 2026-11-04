@@ -925,34 +925,37 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     var ob = L.orientBar;
     doc.rect(ob.x, ob.y, ob.w, ob.h, 'F');
 
-    // Cabeçalho: brasão (esquerda) + escola + prova + "Folha de Respostas"
-    var hasSchool = !!opts.school;
+    // Cabeçalho: brasão/logotipo (esquerda) + escola + prova + "Folha de Respostas"
+    // Logotipo quadrado ocupa até 24 mm; logotipo largo (ex.: com o nome em faixa) ocupa até 40 mm de largura.
+    var logoRight = 22;
     if (opts.logo && opts.logo.data) {
-      var box = 24, lw = box, lh = box, r = opts.logo.ratio || 1; // ratio = largura/altura
-      if (r >= 1) lh = box / r; else lw = box * r;
-      try { doc.addImage(opts.logo.data, 'PNG', 24 + (box - lw) / 2, 10 + (box - lh) / 2, lw, lh); } catch (e) { /* logo inválido: segue sem */ }
+      var r = opts.logo.ratio || 1, lw = Math.min(40, 24 * r), lh = lw / r;
+      try { doc.addImage(opts.logo.data, 'PNG', 22, 10 + (24 - lh) / 2, lw, lh); logoRight = 22 + lw; } catch (e) { /* logo inválido: segue sem */ }
     }
+    var maxW = Math.min(104, 2 * (105 - (logoRight + 4)));   // largura livre, centrada em 105 mm
     var title = opts.examName || 'ENEMzinho';
-    if (hasSchool) {
+    var showName = !!opts.school && !opts.hideSchoolName;
+    function fit(text, size, min) {
+      doc.setFontSize(size);
+      while (size > min && doc.getTextWidth(text) > maxW) { size -= 0.5; doc.setFontSize(size); }
+    }
+    if (showName) {
       doc.setFont('helvetica', 'bold');
-      var fs = 10.5;
-      doc.setFontSize(fs);
-      while (fs > 6.5 && doc.getTextWidth(opts.school) > 104) { fs -= 0.5; doc.setFontSize(fs); }
+      fit(opts.school, 10.5, 6.5);
       doc.text(opts.school, 105, 24, { align: 'center' });
-      doc.setFontSize(15);
-      var tf = 15;
-      while (tf > 9 && doc.getTextWidth(title) > 104) { tf -= 1; doc.setFontSize(tf); }
+      fit(title, 15, 9);
       doc.text(title, 105, 31.5, { align: 'center' });
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(9);
       doc.text(opts.subtitle || 'Folha de Respostas', 105, 37, { align: 'center' });
     } else {
+      var ty = (opts.logo && opts.logo.data) ? 28 : 26;
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(15);
-      doc.text(title, 105, 26, { align: 'center' });
+      fit(title, 15, 9);
+      doc.text(title, 105, ty, { align: 'center' });
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(9);
-      doc.text(opts.subtitle || 'Folha de Respostas', 105, 32, { align: 'center' });
+      doc.text(opts.subtitle || 'Folha de Respostas', 105, ty + 6, { align: 'center' });
     }
 
     // Campos de identificação
@@ -1402,7 +1405,21 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     return createImageBitmap(file).then(function (bmp) {
       var sc = Math.min(1, 500 / Math.max(bmp.width, bmp.height));
       var c = document.createElement('canvas'); c.width = Math.max(1, Math.round(bmp.width * sc)); c.height = Math.max(1, Math.round(bmp.height * sc));
-      var ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height); ctx.drawImage(bmp, 0, 0, c.width, c.height);
+      var ctx = c.getContext('2d', { willReadFrequently: true }); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height); ctx.drawImage(bmp, 0, 0, c.width, c.height);
+      // remove filetes pretos sólidos nas bordas (resíduo comum de recortes feitos no Word)
+      var W = c.width, H = c.height, px = ctx.getImageData(0, 0, W, H).data;
+      function dark(x, y) { var i = (y * W + x) * 4; return (px[i] * 299 + px[i + 1] * 587 + px[i + 2] * 114) / 1000 < 70 && px[i + 3] > 200; }
+      function rowDark(y) { var n = 0; for (var x = 0; x < W; x++) if (dark(x, y)) n++; return n / W > 0.95; }
+      function colDark(x) { var n = 0; for (var y = 0; y < H; y++) if (dark(x, y)) n++; return n / H > 0.95; }
+      var t = 0, bt = H - 1, l = 0, r = W - 1, lim = Math.min(12, Math.floor(Math.min(W, H) / 8));
+      while (t < lim && rowDark(t)) t++;
+      while (H - 1 - bt < lim && rowDark(bt)) bt--;
+      while (l < lim && colDark(l)) l++;
+      while (W - 1 - r < lim && colDark(r)) r--;
+      if (t > 0 || bt < H - 1 || l > 0 || r < W - 1) {
+        var cw = r - l + 1, ch = bt - t + 1, c2 = document.createElement('canvas'); c2.width = cw; c2.height = ch;
+        c2.getContext('2d').drawImage(c, l, t, cw, ch, 0, 0, cw, ch); c = c2;
+      }
       return { data: c.toDataURL('image/png'), ratio: c.width / c.height };
     });
   }
@@ -1410,15 +1427,17 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     var el = $('#epanel'); if (!el) return;
     var cur = id === 'new' ? { id: null, nome: '', logo: null, ratio: 1 } : db.escolas.filter(function (e) { return e.id === id; })[0];
     if (!cur) return;
-    var draft = { nome: cur.nome, logo: cur.logo, ratio: cur.ratio || 1 };
+    var draft = { nome: cur.nome, logo: cur.logo, ratio: cur.ratio || 1, texto: cur.mostrarNome !== false };
     function paint() {
       el.innerHTML = '<div class="card"><h3>' + (cur.id ? 'Editar escola' : 'Nova escola') + '</h3>' +
         '<label>Nome da escola<input id="enome" value="' + esc(draft.nome) + '" placeholder="Ex.: Instituto Esther Valério"></label>' +
         '<div class="row"><label class="btn">🖼 ' + (draft.logo ? 'Trocar brasão' : 'Escolher brasão') + '<input id="elogo" type="file" accept="image/*" hidden></label>' +
         (draft.logo ? '<button id="erem">Remover brasão</button>' : '') + '</div>' +
+        (draft.logo ? '<label class="chk"><input type="checkbox" id="etexto"' + (draft.texto ? ' checked' : '') + '> Repetir o nome em texto ao lado do brasão (desmarque se o brasão já traz o nome escrito)</label>' : '') +
         (draft.logo ? '<p><img src="' + draft.logo + '" alt="brasão" style="max-width:120px;max-height:120px;background:#fff;border:1px solid var(--line);border-radius:8px;padding:6px"></p>' : '<p class="hint">Use uma imagem nítida do brasão (PNG ou JPG), de preferência com fundo branco ou transparente. Ela fica guardada só neste aparelho, junto com os outros dados.</p>') +
         '<div class="row"><button class="pri" id="esave">Salvar escola</button>' + (cur.id ? '<button class="dng" id="edel">Excluir</button>' : '') + '<button id="ecancel">Cancelar</button></div></div>';
       $('#enome').oninput = function () { draft.nome = this.value; };
+      if ($('#etexto')) $('#etexto').onchange = function () { draft.texto = this.checked; };
       $('#elogo').onchange = function () {
         var f = this.files[0]; if (!f) return;
         readLogo(f).then(function (r) { draft.logo = r.data; draft.ratio = r.ratio; paint(); })
@@ -1434,8 +1453,8 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
       };
       $('#esave').onclick = function () {
         var nome = draft.nome.trim(); if (!nome) return toast('Digite o nome da escola.');
-        if (cur.id) { cur.nome = nome; cur.logo = draft.logo; cur.ratio = draft.ratio; }
-        else { cur = { id: uid(), nome: nome, logo: draft.logo, ratio: draft.ratio }; db.escolas.push(cur); }
+        if (cur.id) { cur.nome = nome; cur.logo = draft.logo; cur.ratio = draft.ratio; cur.mostrarNome = draft.texto; }
+        else { cur = { id: uid(), nome: nome, logo: draft.logo, ratio: draft.ratio, mostrarNome: draft.texto }; db.escolas.push(cur); }
         db.cfg.escolaId = cur.id; save(); render(); toast('Escola salva.');
       };
     }
@@ -1464,7 +1483,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     function base(prova) {
       var esc_ = db.escolas.filter(function (e) { return e.id === $('#fescola').value; })[0];
       db.cfg.escolaId = esc_ ? esc_.id : ''; save();
-      return { examName: prova.nome.length > 34 ? 'ENEMzinho' : prova.nome, school: esc_ ? esc_.nome : '',
+      return { examName: prova.nome.length > 34 ? 'ENEMzinho' : prova.nome, school: esc_ ? esc_.nome : '', hideSchoolName: !!(esc_ && esc_.logo && esc_.mostrarNome === false),
         logo: esc_ && esc_.logo ? { data: esc_.logo, ratio: esc_.ratio || 1 } : null, subtitle: 'Folha de Respostas', data: $('#fdata').value };
     }
     $('#enew').onclick = function () { openEscola('new'); };
