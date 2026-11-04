@@ -50,6 +50,8 @@ tr.low td{color:var(--bad)}
 .thumb{width:100%;max-height:360px;object-fit:contain;border-radius:8px;background:#000;margin:8px 0}
 .card.q.salvo{border-left:5px solid var(--ok)}.card.q.revisar{border-left:5px solid var(--warn)}.card.q.erro{border-left:5px solid var(--bad)}
 .bar{height:8px;background:var(--line);border-radius:4px;min-width:60px}.bar i{display:block;height:100%;background:var(--pri);border-radius:4px}
+.arow{display:flex;gap:6px;align-items:center;margin:6px 0}.arow .anome{margin:0;flex:1}.arow .amat{width:38px;font-variant-numeric:tabular-nums}
+.arow button{width:40px;height:40px;padding:0;flex:none}.arow.gone .anome{text-decoration:line-through;opacity:.5}
 .stats b{font-size:1.3rem}
 details summary{cursor:pointer;color:var(--pri);margin-top:8px}
 #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#111;color:#fff;padding:10px 16px;border-radius:10px;opacity:0;pointer-events:none;transition:.2s;z-index:20;max-width:90%}
@@ -1167,21 +1169,23 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   }
 
   // ---- Turmas
-  function parseAlunos(text, existing) {
-    var lines = text.split(/\r?\n/).map(function (l) { return l.split(/[;\t]/)[0].trim(); }).filter(Boolean);
-    var byName = {}, maxSeq = 0;
-    (existing || []).forEach(function (a) { byName[norm(a.nome)] = a; maxSeq = Math.max(maxSeq, parseInt(a.mat, 10) % 100); });
-    return { lines: lines, byName: byName, maxSeq: maxSeq };
-  }
   function viewTurmas() {
     var h = '';
     if (S.editTurma) {
-      var t = S.editTurma === 'new' ? { nome: '', alunos: [] } : turmaById(S.editTurma);
-      h += '<div class="card"><h2>' + (S.editTurma === 'new' ? 'Nova turma' : 'Editar turma') + '</h2>' +
-        '<label>Nome da turma<input id="tnome" value="' + esc(t.nome) + '" placeholder="Ex.: 8º Ano A"></label>' +
-        '<label>Alunos (um por linha — pode colar direto do Excel)<textarea id="talunos" rows="10" placeholder="Ana Beatriz Souza&#10;Bruno Lima&#10;...">' +
-        esc(t.alunos.map(function (a) { return a.nome; }).join('\n')) + '</textarea></label>' +
-        '<p class="hint">A matrícula de 4 dígitos é gerada automaticamente e não muda se o nome continuar na lista.</p>' +
+      var isNewT = S.editTurma === 'new';
+      var t = isNewT ? { nome: '', alunos: [] } : turmaById(S.editTurma);
+      h += '<div class="card"><h2>' + (isNewT ? 'Nova turma' : 'Editar turma') + '</h2>' +
+        '<label>Nome da turma<input id="tnome" value="' + esc(t.nome) + '" placeholder="Ex.: 8º Ano A"></label>';
+      if (!isNewT && t.alunos.length) {
+        h += '<p class="hint" style="margin-bottom:0">Alunos atuais — dá para corrigir o nome sem perder matrícula nem notas:</p><div id="alist">' +
+          t.alunos.map(function (a) {
+            return '<div class="arow" data-mat="' + a.mat + '"><span class="hint amat">' + a.mat + '</span>' +
+              '<input class="anome" value="' + esc(a.nome) + '"><button type="button" class="arem" title="Remover aluno">✕</button></div>';
+          }).join('') + '</div>';
+      }
+      h += '<label>' + (isNewT ? 'Alunos (um por linha — pode colar direto do Excel)' : 'Adicionar alunos novos (um por linha)') +
+        '<textarea id="talunos" rows="' + (isNewT ? 10 : 4) + '" placeholder="Ana Beatriz Souza&#10;Bruno Lima&#10;..."></textarea></label>' +
+        '<p class="hint">Cada aluno recebe uma matrícula de 4 dígitos que nunca muda e nunca é reaproveitada, mesmo que o aluno saia da turma.</p>' +
         '<div class="row"><button class="pri" id="tsave">Salvar turma</button><button id="tcancel">Cancelar</button></div></div>';
     } else {
       h += '<button class="pri" id="tnew">+ Nova turma</button>';
@@ -1195,6 +1199,12 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     root.innerHTML = h;
     if (S.editTurma) {
       $('#tcancel').onclick = function () { S.editTurma = null; render(); };
+      $$('#alist .arem').forEach(function (b) {
+        b.onclick = function () {
+          var row = b.parentNode, on = row.dataset.rm !== '1';
+          row.dataset.rm = on ? '1' : '0'; row.classList.toggle('gone', on); b.textContent = on ? '↩' : '✕';
+        };
+      });
       $('#tsave').onclick = function () {
         var nome = $('#tnome').value.trim();
         if (!nome) return toast('Dê um nome à turma.');
@@ -1206,17 +1216,47 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
           if (c > 99) return toast('Limite de 99 turmas atingido.');
           t.cod = c;
         }
-        var p = parseAlunos($('#talunos').value, t.alunos), seq = p.maxSeq, out = [];
-        for (var i = 0; i < p.lines.length; i++) {
-          var old = p.byName[norm(p.lines[i])];
-          if (old && out.indexOf(old) < 0) { out.push(old); continue; }
+        // contador que só cresce: matrícula nunca é reaproveitada
+        var seq = t.next || 0;
+        t.alunos.forEach(function (a) { seq = Math.max(seq, parseInt(a.mat, 10) % 100); });
+        var keep = [], removed = [], renamed = [];
+        var rows = $$('#alist .arow');
+        if (rows.length) {
+          rows.forEach(function (row) {
+            var a = t.alunos.filter(function (x) { return x.mat === row.dataset.mat; })[0];
+            if (!a) return;
+            if (row.dataset.rm === '1') { removed.push(a); return; }
+            var nn = row.querySelector('.anome').value.trim();
+            if (!nn) { removed.push(a); return; }
+            if (nn !== a.nome) renamed.push({ a: a, nome: nn });
+            keep.push(a);
+          });
+        } else keep = t.alunos.slice();
+        var names = keep.map(function (a) { return norm(a.nome); });
+        renamed.forEach(function (r) { names[keep.indexOf(r.a)] = norm(r.nome); });
+        var lines = $('#talunos').value.split(/\r?\n/).map(function (l) { return l.split(/[;\t]/)[0].trim(); }).filter(Boolean);
+        var novos = [], dup = 0;
+        for (var i = 0; i < lines.length; i++) {
+          var k = norm(lines[i]);
+          if (names.indexOf(k) >= 0) { dup++; continue; }
           seq++;
-          if (seq > 99) return toast('Máximo de 99 alunos por turma.');
-          out.push({ nome: p.lines[i], mat: pad4(t.cod * 100 + seq) });
+          if (seq > 99) return toast('Esta turma já usou as 99 matrículas possíveis. Crie outra turma.');
+          names.push(k);
+          novos.push({ nome: lines[i], mat: pad4(t.cod * 100 + seq) });
         }
-        t.nome = nome; t.alunos = out;
+        if (removed.length) {
+          var nres = db.resultados.filter(function (r) { return removed.some(function (a) { return a.mat === r.mat; }); }).length;
+          if (!confirm('Remover ' + removed.length + ' aluno(s) da turma' + (nres ? ' e apagar ' + nres + ' nota(s) deles' : '') + '?')) return;
+          db.resultados = db.resultados.filter(function (r) { return !removed.some(function (a) { return a.mat === r.mat; }); });
+        }
+        renamed.forEach(function (r) {
+          r.a.nome = r.nome;
+          db.resultados.forEach(function (x) { if (x.mat === r.a.mat) x.nome = r.nome; });
+        });
+        t.nome = nome; t.alunos = keep.concat(novos); t.next = seq;
         if (isNew) db.turmas.push(t);
-        S.editTurma = null; save(); render(); toast('Turma salva.');
+        S.editTurma = null; save(); render();
+        toast('Turma salva' + (novos.length ? ' • ' + novos.length + ' novo(s)' : '') + (dup ? ' • ' + dup + ' nome(s) repetido(s) ignorado(s)' : '') + '.');
       };
     } else {
       var nb = $('#tnew'); if (nb) nb.onclick = function () { S.editTurma = 'new'; render(); };
