@@ -59,6 +59,23 @@ details summary{cursor:pointer;color:var(--pri);margin-top:8px}
 #lock{position:fixed;inset:0;background:var(--bg);z-index:30;display:flex;align-items:center;justify-content:center;padding:20px}
 #lock .card{width:100%;max-width:380px}
 #bkbanner{display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#fff4db;color:#5b3b00;padding:10px 14px;border-bottom:1px solid #f0d28a;font-size:.9rem}
+.chips{display:grid;grid-template-columns:repeat(auto-fill,minmax(54px,1fr));gap:6px;margin:8px 0}
+.chip{padding:4px 2px;display:flex;flex-direction:column;align-items:center;line-height:1.1;min-height:48px}
+.chip i{font-style:normal;font-size:.7rem;color:var(--mut)}.chip b{font-size:1.15rem}
+.chip.f-duv{border-color:#f59e0b;background:#fef3c7;color:#1b2430}.chip.f-dup{border-color:#dc2626;background:#fee2e2;color:#1b2430}.chip.f-bco{border-style:dashed}
+.wr{color:var(--warn)}
+.thumbwrap{overflow:auto;max-height:420px;border-radius:8px;background:#000;margin:8px 0}.thumbwrap .thumb{margin:0;display:block}
+.thumbwrap.zoom img{width:240%;max-width:none;max-height:none}
+.pendbar{border-left:5px solid var(--warn)}
+#live{position:fixed;inset:0;z-index:40;background:#000;color:#fff}
+#live video,#live canvas.lq{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
+#live .flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none;transition:opacity .15s}#live .flash.on{opacity:.7;transition:none}
+#live .ltop{position:absolute;top:0;left:0;right:0;display:flex;justify-content:space-between;align-items:center;padding:calc(10px + env(safe-area-inset-top)) 14px 10px;background:rgba(0,0,0,.55)}
+#live .ltop button,#live .lbot button{background:rgba(255,255,255,.2);color:#fff;border-color:transparent}
+#live .lstat{position:absolute;left:12px;right:12px;bottom:96px;padding:10px 14px;border-radius:12px;background:rgba(0,0,0,.65);text-align:center;border:2px solid transparent}
+#live .lstat.ok{border-color:#22c55e}#live .lstat.warn{border-color:#f59e0b}#live .lstat.bad{border-color:#ef4444}
+#live .lt{font-weight:700;font-size:1.1rem;display:block}#live .ls{opacity:.8;display:block}
+#live .lbot{position:absolute;left:0;right:0;bottom:0;display:flex;gap:10px;justify-content:center;padding:12px 14px calc(14px + env(safe-area-inset-bottom));background:rgba(0,0,0,.55)}
 #bkbanner span{flex:1;min-width:200px}#bkbanner button{padding:6px 10px;color:#1b2430}
 #banner{background:var(--warn);color:#fff;padding:8px 14px;font-size:.85rem}
 </style>
@@ -898,6 +915,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
 
     return {
       ok: true,
+      quad: quad.map(function (p) { return [p[0] * G.b, p[1] * G.b]; }),
       matricula: digits.join(''),
       matriculaOK: idOK,
       modelo: modelo,
@@ -1086,6 +1104,170 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   return { drawSheet: drawSheet, buildPDF: buildPDF };
 });
 </script>
+<script>/*
+ * Câmera ao vivo: abre a câmera traseira, lê a folha continuamente e captura sozinha
+ * quando a leitura fica estável. Tudo no aparelho; nenhuma imagem é gravada.
+ *
+ * OMRLive.open({
+ *   read(imageData) -> resultado do leitor (com .quad em pixels do quadro),
+ *   describe(res)   -> { kind: 'ok'|'warn'|'bad', text }   (o que mostrar enquanto estabiliza)
+ *   onCapture(res, canvas) -> { kind, text }                 (guarda a folha; devolve o resumo)
+ *   progress()      -> texto do contador (ex.: "Corrigidas 12/31")
+ *   onActivity()    -> chamado a cada captura (evita o bloqueio automático por inatividade)
+ *   onClose()
+ * }) -> Promise (rejeita se a câmera não abrir)
+ */
+(function (root, factory) {
+  root.OMRLive = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  var NEED = 3;   // leituras idênticas seguidas antes de capturar
+  var GAP = 110;  // ms entre uma leitura e a próxima
+  var actx = null;
+
+  function beep(ok) {
+    try {
+      if (!actx) return;
+      var o = actx.createOscillator(), g = actx.createGain();
+      o.frequency.value = ok ? 880 : 320; g.gain.value = 0.08;
+      o.connect(g); g.connect(actx.destination); o.start(); o.stop(actx.currentTime + 0.12);
+    } catch (e) { /* sem som */ }
+  }
+
+  function open(o) {
+    try { // precisa nascer dentro do toque do usuário
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (AC && !actx) actx = new AC();
+      if (actx && actx.state === 'suspended') actx.resume();
+    } catch (e) { actx = null; }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return Promise.reject({ name: 'NotSupportedError' });
+    return navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+    }).then(function (stream) { run(stream, o); });
+  }
+
+  function run(stream, o) {
+    var live = document.createElement('div');
+    live.id = 'live';
+    live.innerHTML =
+      '<video playsinline muted autoplay></video><canvas class="lq"></canvas><div class="flash"></div>' +
+      '<div class="ltop"><b class="lprog"></b><button type="button" class="lclose">✕ Fechar</button></div>' +
+      '<div class="lstat"><span class="lt"></span><small class="ls"></small></div>' +
+      '<div class="lbot"><button type="button" class="ltorch" hidden>🔦 Lanterna</button><button type="button" class="lnow">Capturar agora</button></div>';
+    document.body.appendChild(live);
+    var video = live.querySelector('video'), qcv = live.querySelector('.lq'), stat = live.querySelector('.lstat');
+    var lt = live.querySelector('.lt'), ls = live.querySelector('.ls'), prog = live.querySelector('.lprog'), flash = live.querySelector('.flash');
+    var track = stream.getVideoTracks()[0];
+    var work = document.createElement('canvas'), wctx = work.getContext('2d', { willReadFrequently: true });
+    var running = true, busy = false, timer = null, wake = null;
+    var lastSig = '', stable = 0, miss = 0, lastCap = null, force = 0, holdUntil = 0;
+
+    function say(kind, text, sub) { stat.className = 'lstat ' + (kind || ''); lt.textContent = text; ls.textContent = sub || ''; }
+
+    function drawQuad(q, color, ww, wh) {
+      var dpr = window.devicePixelRatio || 1, W = qcv.clientWidth, H = qcv.clientHeight;
+      if (qcv.width !== Math.round(W * dpr) || qcv.height !== Math.round(H * dpr)) { qcv.width = Math.round(W * dpr); qcv.height = Math.round(H * dpr); }
+      var c = qcv.getContext('2d'); c.setTransform(dpr, 0, 0, dpr, 0, 0); c.clearRect(0, 0, W, H);
+      if (!q) return;
+      var s = Math.min(W / ww, H / wh), ox = (W - ww * s) / 2, oy = (H - wh * s) / 2;
+      c.beginPath();
+      q.forEach(function (p, i) { var x = ox + p[0] * s, y = oy + p[1] * s; if (i) c.lineTo(x, y); else c.moveTo(x, y); });
+      c.closePath(); c.lineWidth = 4; c.strokeStyle = color; c.stroke();
+    }
+
+    function capture(res) {
+      force = 0; stable = 0;
+      var snap = document.createElement('canvas'); snap.width = work.width; snap.height = work.height;
+      snap.getContext('2d').drawImage(work, 0, 0);
+      var out = (o.onCapture && o.onCapture(res, snap)) || { kind: 'ok', text: 'Lida' };
+      lastCap = res.matricula; holdUntil = Date.now() + 1800;
+      say(out.kind || 'ok', out.text, '');
+      flash.classList.add('on'); setTimeout(function () { flash.classList.remove('on'); }, 70);
+      beep(out.kind !== 'bad');
+      try { if (navigator.vibrate) navigator.vibrate(out.kind === 'warn' ? [60, 50, 60] : 70); } catch (e) { /* ok */ }
+      if (o.onActivity) o.onActivity();
+      if (o.progress) prog.textContent = o.progress();
+    }
+
+    function handle(res, ww, wh) {
+      var holding = Date.now() < holdUntil;
+      if (o.progress && !holding) prog.textContent = o.progress();
+      if (!res.ok) {
+        miss++; stable = 0; lastSig = ''; drawQuad(null);
+        if (miss >= 3) lastCap = null; // a folha saiu de cena: pronta para a próxima
+        if (!holding) {
+          var cut = res.error && /cortada/.test(res.error);
+          say(cut ? 'warn' : '', cut ? 'Afaste um pouco o celular' : (force ? 'Procurando a folha para capturar…' : 'Procurando a folha…'),
+            'Enquadre a folha inteira, com os 4 quadrados pretos dos cantos.');
+        }
+        return;
+      }
+      miss = 0;
+      if (!res.matriculaOK) {
+        stable = 0; lastSig = ''; drawQuad(res.quad, '#f59e0b', ww, wh);
+        if (!holding) say('warn', 'Matrícula ilegível', 'Melhore a luz ou o ângulo e segure firme.');
+        return;
+      }
+      var sig = res.matricula + '|' + (res.modelo || '') + '|' + res.answers.join('');
+      stable = sig === lastSig ? stable + 1 : 1; lastSig = sig;
+      var same = res.matricula === lastCap;
+      drawQuad(res.quad, same ? '#22c55e' : '#facc15', ww, wh);
+      if (force) { capture(res); return; }
+      if (same) { if (!holding) say('ok', '✔ Folha já lida', 'Troque de folha.'); return; }
+      var d = (o.describe && o.describe(res)) || { kind: '', text: 'Folha detectada' };
+      if (stable < NEED) { if (!holding) say(d.kind, d.text, 'Segure firme… ' + stable + '/' + NEED); return; }
+      capture(res);
+    }
+
+    function tick() {
+      if (!running) return;
+      if (busy || video.readyState < 2 || !video.videoWidth) { timer = setTimeout(tick, GAP); return; }
+      busy = true;
+      try {
+        var vw = video.videoWidth, vh = video.videoHeight, sc = Math.min(1, 1920 / Math.max(vw, vh));
+        var ww = Math.round(vw * sc), wh = Math.round(vh * sc);
+        if (work.width !== ww || work.height !== wh) { work.width = ww; work.height = wh; }
+        wctx.drawImage(video, 0, 0, ww, wh);
+        handle(o.read(wctx.getImageData(0, 0, ww, wh)), ww, wh);
+        if (force && Date.now() > force) force = 0;
+      } catch (e) { /* quadro ruim: ignora e segue */ }
+      busy = false;
+      timer = setTimeout(tick, GAP);
+    }
+
+    function close() {
+      if (!running) return;
+      running = false; clearTimeout(timer);
+      try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) { /* ok */ }
+      try { if (wake) wake.release(); } catch (e) { /* ok */ }
+      document.removeEventListener('visibilitychange', onVis);
+      live.remove();
+      if (o.onClose) o.onClose();
+    }
+    function onVis() { if (document.hidden) close(); }
+    document.addEventListener('visibilitychange', onVis);
+
+    live.querySelector('.lclose').onclick = close;
+    live.querySelector('.lnow').onclick = function () { force = Date.now() + 6000; say('', 'Capturando…', 'Mantenha a folha enquadrada.'); };
+
+    // lanterna e foco contínuo, quando o aparelho oferece
+    var cap = {}; try { cap = track.getCapabilities ? track.getCapabilities() : {}; } catch (e) { cap = {}; }
+    if (cap.torch) {
+      var tb = live.querySelector('.ltorch'), on = false; tb.hidden = false;
+      tb.onclick = function () { on = !on; track.applyConstraints({ advanced: [{ torch: on }] }).catch(function () { on = !on; }); };
+    }
+    if (cap.focusMode && cap.focusMode.indexOf('continuous') >= 0) track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(function () { /* ok */ });
+    try { if (navigator.wakeLock) navigator.wakeLock.request('screen').then(function (w) { wake = w; }, function () { /* ok */ }); } catch (e) { /* ok */ }
+
+    say('', 'Abrindo a câmera…', '');
+    video.srcObject = stream;
+    var pl = video.play(); if (pl && pl.catch) pl.catch(function () { /* ok */ });
+    timer = setTimeout(tick, 400);
+  }
+
+  return { open: open };
+});
+</script>
 <script>(function () {
   'use strict';
   var jsPDFCtor = window.jspdf.jsPDF;
@@ -1114,6 +1296,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   function normDB() {
     db.cfg = db.cfg || { school: '' };
     db.escolas = db.escolas || [];
+    if (db.cfg.revisao !== 'duvida') db.cfg.revisao = 'sempre';
     // migra o campo de texto antigo "Escola" para uma escola cadastrada (sem brasão)
     if (!db.escolas.length && db.cfg.school && db.cfg.school.trim()) {
       var e = { id: Math.random().toString(36).slice(2, 9), nome: db.cfg.school.trim(), logo: null, ratio: 1 };
@@ -1596,8 +1779,8 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     }
     return createImageBitmap(file, { imageOrientation: 'from-image' }).catch(function () { return createImageBitmap(file); }).then(draw);
   }
-  function thumb(canvas, overlay) {
-    var w = 720, sc = w / canvas.width, c = document.createElement('canvas');
+  function thumb(canvas, overlay, w) {
+    w = w || 720; var sc = w / canvas.width, c = document.createElement('canvas');
     c.width = w; c.height = Math.round(canvas.height * sc);
     var ctx = c.getContext('2d'); ctx.drawImage(canvas, 0, 0, c.width, c.height);
     (overlay || []).forEach(function (o) {
@@ -1606,15 +1789,36 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     });
     return c.toDataURL('image/jpeg', 0.7);
   }
-  function needsReview(item, prova) {
-    var r = item.r;
-    if (!item.ok) return true;
-    if (!r.matriculaOK || !findAluno(r.matricula, S.sel.turma)) return true;
-    if (prova.usaB && !r.modelo) return true;
-    return r.flags.some(function (f) { return f.q !== 'modelo' && f.q !== 'matrícula' && f.tipo !== 'branco' && f.tipo !== 'fraca'; });
+  // Analisa uma folha lida: o que impede salvar (block), o que merece atenção (warn) e dúvidas de leitura.
+  function analyze(item, prova) {
+    var r = item.r, block = [], warn = [], doubts = [];
+    if (!item.ok) return { block: ['Folha não lida.'], warn: warn, doubts: doubts };
+    var found = r.matriculaOK ? findAluno(r.matricula, '') : null;
+    if (!r.matriculaOK) block.push('Matrícula ilegível: digite o número.');
+    else if (!found) block.push('Matrícula ' + r.matricula + ' não encontrada.');
+    else if (S.sel.turma && found.turma.id !== S.sel.turma) block.push('Este aluno (' + found.aluno.nome + ') é de outra turma (' + found.turma.nome + ').');
+    if (prova.usaB && !r.modelo) block.push('Modelo (A ou B) não identificado.');
+    if (found) {
+      var old = db.resultados.filter(function (x) { return x.provaId === prova.id && x.mat === r.matricula; })[0];
+      if (old) warn.push('Este aluno já tem nota (' + fmtNota(old.nota) + '). Salvar vai substituir.');
+      var outra = S.queue.filter(function (x) { return x !== item && x.status === 'revisar' && x.r && x.r.matricula === r.matricula; });
+      if (outra.length) warn.push('Há outra folha deste mesmo aluno aguardando conferência.');
+    }
+    (r.flags || []).forEach(function (f) { if (typeof f.q === 'number' && (f.tipo === 'dupla' || f.tipo === 'revisar')) doubts.push(f.q); });
+    return { block: block, warn: warn, doubts: doubts, found: found };
+  }
+  function ingest(r, canvas, nome, prova) {
+    var item = { id: uid(), nome: nome, status: 'lendo', ok: r.ok, r: r };
+    S.queue.unshift(item);
+    if (!r.ok) { item.status = 'erro'; item.thumb = canvas ? thumb(canvas, [], 900) : null; return item; }
+    item.thumb = thumb(canvas, r.overlay, 900);
+    var a = analyze(item, prova);
+    if ((db.cfg.revisao || 'sempre') === 'duvida' && !a.block.length && !a.warn.length && !a.doubts.length) commit(item, prova);
+    else item.status = 'revisar';
+    return item;
   }
   function commit(item, prova) {
-    var r = item.r, found = findAluno(r.matricula, S.sel.turma);
+    var r = item.r, found = findAluno(r.matricula, '');
     var g = grade(prova, r.modelo || 'A', r.answers);
     var rec = { id: uid(), provaId: prova.id, mat: r.matricula, nome: found ? found.aluno.nome : '(matrícula ' + r.matricula + ')', turmaId: found ? found.turma.id : '',
       modelo: r.modelo || 'A', answers: r.answers.slice(), acertos: g.acertos, nota: g.nota, data: new Date().toISOString(), manual: !!item.manual };
@@ -1631,81 +1835,183 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     var chain = Promise.resolve();
     Array.prototype.slice.call(files).forEach(function (f) {
       chain = chain.then(function () {
-        var item = { id: uid(), nome: f.name, status: 'lendo' }; S.queue.unshift(item); renderQueue();
         return new Promise(function (res) { setTimeout(res, 30); })
           .then(function () { return loadImage(f); })
-          .then(function (im) {
-            var r = Reader.readSheet(im.data, L);
-            item.ok = r.ok; item.r = r;
-            if (!r.ok) { item.status = 'erro'; item.thumb = thumb(im.canvas, []); return; }
-            item.thumb = thumb(im.canvas, r.overlay);
-            if (needsReview(item, prova)) item.status = 'revisar'; else commit(item, prova);
+          .then(function (im) { ingest(Reader.readSheet(im.data, L), im.canvas, f.name, prova); })
+          .catch(function (e) {
+            S.queue.unshift({ id: uid(), nome: f.name, status: 'erro', ok: false, r: { ok: false, error: 'Não consegui abrir a imagem (' + e.message + ').' } });
           })
-          .catch(function (e) { item.status = 'erro'; item.r = { ok: false, error: 'Não consegui abrir a imagem (' + e.message + ').' }; item.ok = false; })
           .then(function () { renderQueue(); });
       });
     });
     chain.then(function () { S.busy = false; });
   }
-  function reviewHTML(item, prova) {
-    var r = item.r, h = '<div class="rev">';
-    var found = findAluno(r.matricula, S.sel.turma);
-    h += '<div class="row"><label>Matrícula<input class="rmat" data-id="' + item.id + '" value="' + esc(r.matricula) + '" maxlength="4" inputmode="numeric"></label>' +
-      '<label>Modelo<select class="rmod" data-id="' + item.id + '"><option value="">?</option><option' + (r.modelo === 'A' ? ' selected' : '') + '>A</option>' + (prova.usaB ? '<option' + (r.modelo === 'B' ? ' selected' : '') + '>B</option>' : '') + '</select></label></div>';
-    h += '<p class="hint">' + (found ? 'Aluno: <b>' + esc(found.aluno.nome) + '</b>' : '<b class="bad">Matrícula não encontrada' + (S.sel.turma ? ' nesta turma' : '') + '.</b>') + '</p>';
-    var qs = r.flags.filter(function (f) { return typeof f.q === 'number'; }).map(function (f) { return f.q; });
-    h += '<p class="hint">Confira as questões marcadas em laranja na foto. Toque para corrigir:</p><div class="grid">';
-    qs.forEach(function (q) {
-      var cur = r.answers[q - 1], fl = r.flags.filter(function (f) { return f.q === q; })[0];
-      h += '<div class="qrow"><span class="qn">' + String(q).padStart(2, '0') + '</span>' +
-        ALTS.map(function (a) { return '<button class="alt' + (cur === a ? ' on' : '') + '" data-id="' + item.id + '" data-q="' + q + '" data-a="' + a + '">' + a + '</button>'; }).join('') +
-        '<button class="alt' + (cur == null ? ' on' : '') + '" data-id="' + item.id + '" data-q="' + q + '" data-a="">—</button><span class="hint">' + esc(fl.tipo) + '</span></div>';
-    });
-    h += '</div><div class="row"><button class="pri rok" data-id="' + item.id + '">Confirmar e salvar</button><button class="rdrop" data-id="' + item.id + '">Descartar</button></div></div>';
+
+  // ---- progresso da turma na prova
+  function progressInfo(prova) {
+    if (!prova) return null;
+    var pend = S.queue.filter(function (x) { return x.status === 'revisar'; }).length;
+    var t = S.sel.turma ? turmaById(S.sel.turma) : null;
+    if (!t) {
+      var n = db.resultados.filter(function (r) { return r.provaId === prova.id; }).length;
+      return { feitos: n, total: null, faltam: [], pend: pend };
+    }
+    var done = db.resultados.filter(function (r) { return r.provaId === prova.id; }).map(function (r) { return r.mat; });
+    var faltam = t.alunos.filter(function (a) { return done.indexOf(a.mat) < 0; });
+    return { feitos: t.alunos.length - faltam.length, total: t.alunos.length, faltam: faltam, pend: pend };
+  }
+  function progText() {
+    var p = progressInfo(provaById(S.sel.prova)); if (!p) return '';
+    return p.total == null ? 'Corrigidas: ' + p.feitos : 'Corrigidas ' + p.feitos + ' de ' + p.total;
+  }
+  function renderProg() {
+    var el = $('#prog'); if (!el) return;
+    var p = progressInfo(provaById(S.sel.prova));
+    if (!p) { el.innerHTML = ''; return; }
+    var h = '<div class="card"><div class="row sp"><b>' + (p.total == null ? 'Corrigidas: ' + p.feitos : 'Corrigidas ' + p.feitos + ' de ' + p.total) + '</b>' +
+      '<span class="hint">' + (p.total != null ? 'faltam ' + p.faltam.length : '') + (p.pend ? ' • ' + p.pend + ' aguardando conferência' : '') + '</span></div>';
+    if (p.total) h += '<div class="bar"><i style="width:' + Math.round(p.feitos / p.total * 100) + '%"></i></div>';
+    if (p.faltam.length) h += '<details><summary>Quem falta (' + p.faltam.length + ')</summary><p>' + p.faltam.map(function (a) { return esc(a.nome); }).join(', ') + '</p></details>';
+    else if (p.total) h += '<p class="hint">✔ Todos os alunos da turma já têm nota nesta prova.</p>';
+    el.innerHTML = h + '</div>';
+  }
+
+  // ---- conferência
+  function itemById(id) { return S.queue.filter(function (x) { return x.id === id; })[0]; }
+  function previewLine(item, prova) {
+    var r = item.r, a = analyze(item, prova), n = 0;
+    for (var i = 0; i < prova.nq; i++) if (r.answers[i]) n++;
+    var h = '';
+    h += a.found ? 'Aluno: <b>' + esc(a.found.aluno.nome) + '</b> • ' : '';
+    h += n + ' de ' + prova.nq + ' respondidas';
+    if (a.found && (r.modelo || !prova.usaB)) { var g = grade(prova, r.modelo || 'A', r.answers); h += ' • <b>' + g.acertos + ' acertos • nota ' + fmtNota(g.nota) + '</b>'; }
+    a.block.forEach(function (m) { h += '<br><b class="bad">⛔ ' + esc(m) + '</b>'; });
+    a.warn.forEach(function (m) { h += '<br><b class="wr">⚠ ' + esc(m) + '</b>'; });
+    return { html: h, blocked: a.block.length > 0, replace: a.warn.some(function (m) { return /substituir/.test(m); }) };
+  }
+  function chipsHTML(item, prova) {
+    var r = item.r, h = '';
+    for (var q = 1; q <= prova.nq; q++) {
+      var fl = r.flags.filter(function (f) { return f.q === q; })[0], cls = 'chip';
+      if (fl) cls += fl.tipo === 'dupla' ? ' f-dup' : fl.tipo === 'branco' ? ' f-bco' : (fl.tipo === 'revisar' ? ' f-duv' : '');
+      h += '<button type="button" class="' + cls + '" data-q="' + q + '"><i>' + String(q).padStart(2, '0') + '</i><b>' + (r.answers[q - 1] || '—') + '</b></button>';
+    }
     return h;
+  }
+  function reviewHTML(item, prova) {
+    var r = item.r;
+    return '<div class="rev"><div class="row"><label>Matrícula<input class="rmat" value="' + esc(r.matricula || '') + '" maxlength="4" inputmode="numeric"></label>' +
+      '<label>Modelo<select class="rmod"><option value="">?</option><option' + (r.modelo === 'A' ? ' selected' : '') + '>A</option>' + (prova.usaB ? '<option' + (r.modelo === 'B' ? ' selected' : '') + '>B</option>' : '') + '</select></label></div>' +
+      '<p class="hint pv"></p>' +
+      '<p class="hint">Toque numa resposta para trocar (A → B → C → D → em branco). Em laranja/vermelho: onde há dúvida.</p>' +
+      '<div class="chips">' + chipsHTML(item, prova) + '</div>' +
+      '<div class="row"><button class="pri rok"></button><button class="rdrop">Descartar</button></div></div>';
+  }
+  function refreshReview(card, item, prova) {
+    var pv = previewLine(item, prova);
+    card.querySelector('.pv').innerHTML = pv.html;
+    var ok = card.querySelector('.rok'); ok.disabled = pv.blocked; ok.textContent = pv.replace ? 'Confirmar e substituir' : 'Confirmar e salvar';
   }
   function renderQueue() {
     var el = $('#queue'); if (!el) return;
     var prova = provaById(S.sel.prova);
-    el.innerHTML = S.queue.map(function (it) {
-      var badge = { lendo: '⏳ lendo…', salvo: '✔ salvo', revisar: '⚠ revisar', erro: '✖ erro' }[it.status];
+    var easy = prova ? S.queue.filter(function (it) {
+      if (it.status !== 'revisar') return false; var a = analyze(it, prova); return !a.block.length && !a.warn.length && !a.doubts.length;
+    }) : [];
+    var pend = S.queue.filter(function (x) { return x.status === 'revisar'; }).length;
+    var top = pend ? '<div class="card pendbar"><b>' + pend + ' folha(s) aguardando conferência</b>' +
+      (easy.length >= 2 ? '<div class="row"><button class="pri" id="rall">✔ Salvar as ' + easy.length + ' sem dúvida</button></div>' : '') + '</div>' : '';
+    el.innerHTML = top + S.queue.map(function (it) {
+      var badge = { lendo: '⏳ lendo…', salvo: '✔ salvo', revisar: '⚠ conferir', erro: '✖ erro' }[it.status];
       var body = '';
-      if (it.status === 'erro') body = '<p class="bad">' + esc(it.r.error) + '</p><div class="row"><button class="rman">⌨ Digitar as respostas deste aluno</button></div>';
+      if (it.status === 'erro') body = '<p class="bad">' + esc(it.r.error) + '</p><div class="row"><button class="rman">⌨ Digitar as respostas deste aluno</button><button class="rdrop">Descartar</button></div>';
       if (it.status === 'salvo') body = '<p><b>' + esc(it.rec.nome) + '</b> — nota <b>' + fmtNota(it.rec.nota) + '</b> (' + it.rec.acertos + '/' + prova.nq + ')' + (it.manual ? ' <span class="hint">(digitado)</span>' : '') + (it.replaced ? ' <span class="hint">(substituiu lançamento anterior)</span>' : '') + '</p>' +
         (it.r.warnings && it.r.warnings.length ? '<p class="hint">' + esc(it.r.warnings.join(' ')) + '</p>' : '');
       if (it.status === 'revisar' && prova) body = reviewHTML(it, prova);
-      return '<div class="card q ' + it.status + '"><div class="row sp"><span class="hint">' + esc(it.nome) + '</span><b>' + badge + '</b></div>' +
-        (it.thumb ? '<img class="thumb" src="' + it.thumb + '">' : '') + body + '</div>';
+      return '<div class="card q ' + it.status + '" data-id="' + it.id + '"><div class="row sp"><span class="hint">' + esc(it.nome) + '</span><b>' + badge + '</b></div>' +
+        (it.thumb ? '<div class="thumbwrap"><img class="thumb" src="' + it.thumb + '"></div>' + (it.status === 'revisar' ? '<p class="hint">Toque na foto para ampliar.</p>' : '') : '') + body + '</div>';
     }).join('');
-    $$('.rmat', el).forEach(function (i) { i.onchange = function () { var it = S.queue.filter(function (x) { return x.id === i.dataset.id; })[0]; it.r.matricula = pad4(i.value.replace(/\D/g, '')); it.r.matriculaOK = true; renderQueue(); }; });
-    $$('.rmod', el).forEach(function (i) { i.onchange = function () { var it = S.queue.filter(function (x) { return x.id === i.dataset.id; })[0]; it.r.modelo = i.value || null; }; });
-    $$('.alt', el).forEach(function (b) {
-      b.onclick = function () {
-        var it = S.queue.filter(function (x) { return x.id === b.dataset.id; })[0];
-        it.r.answers[+b.dataset.q - 1] = b.dataset.a || null; renderQueue();
+    $$('.card.q', el).forEach(function (card) {
+      var it = itemById(card.dataset.id);
+      var tw = card.querySelector('.thumbwrap'); if (tw) tw.onclick = function () { tw.classList.toggle('zoom'); };
+      var rm = card.querySelector('.rman'); if (rm) rm.onclick = function () { openManual(); };
+      var rd = card.querySelector('.rdrop'); if (rd) rd.onclick = function () { S.queue = S.queue.filter(function (x) { return x !== it; }); renderQueue(); renderProg(); };
+      if (it.status !== 'revisar' || !prova) return;
+      refreshReview(card, it, prova);
+      card.querySelector('.rmat').onchange = function () {
+        var v = this.value.replace(/\D/g, ''); it.r.matricula = v ? pad4(v) : ''; it.r.matriculaOK = !!v; renderQueue();
+      };
+      card.querySelector('.rmod').onchange = function () { it.r.modelo = this.value || null; refreshReview(card, it, prova); };
+      $$('.chip', card).forEach(function (b) {
+        b.onclick = function () {
+          var q = +b.dataset.q, cur = it.r.answers[q - 1], i = ALTS.indexOf(cur);
+          var nx = i < 0 ? ALTS[0] : (i + 1 < ALTS.length ? ALTS[i + 1] : null);
+          it.r.answers[q - 1] = nx; b.querySelector('b').textContent = nx || '—';
+          it.r.flags = it.r.flags.filter(function (f) { return f.q !== q; });
+          b.className = 'chip'; refreshReview(card, it, prova);
+        };
+      });
+      card.querySelector('.rok').onclick = function () {
+        if (previewLine(it, prova).blocked) return;
+        commit(it, prova); renderQueue(); renderProg();
       };
     });
-    $$('.rman', el).forEach(function (b) { b.onclick = function () { openManual(); }; });
-    $$('.rdrop', el).forEach(function (b) { b.onclick = function () { S.queue = S.queue.filter(function (x) { return x.id !== b.dataset.id; }); renderQueue(); }; });
-    $$('.rok', el).forEach(function (b) {
-      b.onclick = function () {
-        var it = S.queue.filter(function (x) { return x.id === b.dataset.id; })[0];
-        if (!findAluno(it.r.matricula, S.sel.turma)) return toast('Matrícula não encontrada. Corrija o número.');
-        if (prova.usaB && !it.r.modelo) return toast('Informe o modelo (A ou B).');
-        commit(it, prova); renderQueue();
-      };
-    });
+    var ra = $('#rall');
+    if (ra) ra.onclick = function () { easy.forEach(function (it) { commit(it, prova); }); toast(easy.length + ' folhas salvas.'); renderQueue(); renderProg(); };
+    renderProg();
+  }
+
+  // ---- câmera ao vivo
+  function camErr(e) {
+    var n = e && e.name;
+    if (n === 'NotAllowedError' || n === 'SecurityError') return 'A câmera está bloqueada. Permita o uso da câmera nas configurações do navegador para este site e tente de novo.';
+    if (n === 'NotFoundError' || n === 'OverconstrainedError') return 'Não encontrei uma câmera neste aparelho.';
+    if (n === 'NotReadableError') return 'A câmera está em uso por outro aplicativo. Feche-o e tente de novo.';
+    if (n === 'NotSupportedError') return 'Este navegador não permite a câmera ao vivo. Use o botão "Fotografar folha".';
+    return 'Não consegui abrir a câmera' + (e && e.message ? ' (' + e.message + ')' : '') + '. Use o botão "Fotografar folha".';
+  }
+  function openLive() {
+    var prova = provaById(S.sel.prova);
+    if (!prova) return toast('Escolha a prova antes.');
+    if (!window.OMRLive) return toast('Câmera ao vivo indisponível.');
+    var L = Layout.compute(prova.nq);
+    OMRLive.open({
+      read: function (img) { return Reader.readSheet(img, L, { maxDim: 1920 }); },
+      describe: function (res) {
+        var f = findAluno(res.matricula, '');
+        if (!f) return { kind: 'bad', text: 'Matrícula ' + res.matricula + ' não encontrada' };
+        if (S.sel.turma && f.turma.id !== S.sel.turma) return { kind: 'warn', text: f.aluno.nome + ' (outra turma)' };
+        return { kind: 'ok', text: f.aluno.nome };
+      },
+      onCapture: function (res, canvas) {
+        var item = ingest(res, canvas, 'Câmera ao vivo', prova);
+        var f = findAluno(res.matricula, '');
+        var out;
+        if (item.status === 'salvo') out = { kind: 'ok', text: '✔ ' + item.rec.nome + ' — ' + fmtNota(item.rec.nota) };
+        else {
+          var a = analyze(item, prova);
+          out = a.block.length ? { kind: 'bad', text: '⛔ ' + (f ? f.aluno.nome : 'Matrícula ' + res.matricula) + ': conferir depois' }
+            : { kind: 'warn', text: '⚠ ' + (f ? f.aluno.nome : '') + ' guardada para conferir' };
+        }
+        return out;
+      },
+      progress: progText,
+      onActivity: function () { armIdle(); },
+      onClose: function () { render(); },
+    }).catch(function (e) { toast(camErr(e)); });
   }
   function viewCorrigir() {
     root.innerHTML = '<div class="card"><h2>Corrigir folhas</h2>' +
       '<label>Prova<select id="cprova">' + selectOptions(db.provas, S.sel.prova, 'nome', '— escolha —') + '</select></label>' +
       '<label>Turma<select id="cturma">' + selectOptions(db.turmas, S.sel.turma, 'nome', 'Todas') + '</select></label>' +
-      '<div class="row"><label class="btn pri">📷 Fotografar folha<input id="ccam" type="file" accept="image/*" capture="environment" hidden></label>' +
+      '<div class="row"><button class="pri" id="clive">📹 Câmera ao vivo</button></div>' +
+      '<div class="row"><label class="btn">📷 Fotografar folha<input id="ccam" type="file" accept="image/*" capture="environment" hidden></label>' +
       '<label class="btn">🖼 Escolher fotos<input id="cgal" type="file" accept="image/*" multiple hidden></label></div>' +
       '<div class="row"><button id="cman">⌨ Digitar respostas de um aluno (sem foto)</button></div>' +
-      '<p class="hint">Enquadre a folha inteira, com os 4 quadrados pretos dos cantos visíveis, boa luz e sem sombra forte. Fotos sem rasura e sem dúvida são salvas sozinhas; as demais pedem sua conferência.</p></div><div id="manual"></div><div id="queue"></div>';
-    $('#cprova').onchange = function () { S.sel.prova = this.value; };
-    $('#cturma').onchange = function () { S.sel.turma = this.value; };
+      '<p class="hint">Câmera ao vivo: aponte para a folha e o app lê sozinho, passando para a próxima. Enquadre a folha inteira, com os 4 quadrados pretos dos cantos, boa luz e sem sombra forte.</p></div><div id="prog"></div><div id="manual"></div><div id="queue"></div>';
+    $('#cprova').onchange = function () { S.sel.prova = this.value; renderProg(); renderQueue(); };
+    $('#cturma').onchange = function () { S.sel.turma = this.value; renderProg(); renderQueue(); };
+    $('#clive').onclick = openLive;
     ['ccam', 'cgal'].forEach(function (id) {
       $('#' + id).onchange = function () { if (this.files.length) processFiles(this.files); this.value = ''; };
     });
@@ -1863,7 +2169,11 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   // ---- Ajustes (backup, restauração, senha)
   function viewAjustes() {
     var last = db.cfg.lastBackup, bfile = null;
-    root.innerHTML = '<div class="card"><h2>Backup</h2>' +
+    root.innerHTML = '<div class="card"><h2>Conferência das folhas</h2>' +
+      '<label class="chk"><input type="radio" name="arev" value="sempre"' + (db.cfg.revisao !== 'duvida' ? ' checked' : '') + '> Sempre conferir antes de salvar (recomendado no começo)</label>' +
+      '<label class="chk"><input type="radio" name="arev" value="duvida"' + (db.cfg.revisao === 'duvida' ? ' checked' : '') + '> Só quando houver dúvida</label>' +
+      '<p class="hint">Mesmo no segundo modo, folhas com matrícula ilegível, aluno de outra turma, aluno repetido ou marcação duvidosa sempre esperam sua conferência.</p></div>' +
+      '<div class="card"><h2>Backup</h2>' +
       '<p class="hint">' + (last ? 'Último backup: ' + esc(new Date(last).toLocaleString('pt-BR')) : 'Nenhum backup feito ainda.') + '</p>' +
       '<div class="row"><button class="pri" id="abk">Fazer backup agora</button></div>' +
       '<p class="hint">Gera um arquivo criptografado com todas as turmas, provas e notas. Guarde-o fora do celular (Drive ou e-mail para você mesmo). Ele só abre com a senha que estava valendo no momento do backup.</p></div>' +
@@ -1880,6 +2190,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
       '<label class="chk"><input type="checkbox" id="spshow"> Mostrar senhas</label>' +
       '<div class="row"><button class="pri" id="spgo">Trocar senha</button></div>' +
       '<p class="hint">Backups feitos antes da troca continuam com a senha antiga.</p></div>';
+    $$('input[name=arev]').forEach(function (i) { i.onchange = function () { db.cfg.revisao = i.value; save(); toast('Salvo.'); }; });
     $('#abk').onclick = exportBackup;
     $('#arfile').onchange = function () { bfile = this.files[0] || null; $('#arname').textContent = bfile ? bfile.name : ''; };
     $('#argo').onclick = function () {
